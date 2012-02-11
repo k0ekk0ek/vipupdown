@@ -1,61 +1,45 @@
 #!/usr/bin/perl
-# clean.pl - take ifupdown source file and prepare it for inclusion in vipupdown
+# strip.pl - take ifupdown source file and prepare it for inclusion in vipupdown
 
 use strict;
 use utf8;
 use warnings;
+use Getopt::Long;
 
-my $line_control_pattern = '^#line\s+\d+\s+"ifupdown.nw"';
-my %files = (
-  'config.c'  => { 'remove_line_control' => 1,
-                   'remove_functions'    => [ ] },
-  'execute.c' => { 'remove_line_control' => 1,
-                   'remove_functions'    => ['execute_all', 'iface_up', 'iface_down', 'execute'] },
-  'header.h'  => { 'remove_line_control' => 1,
-                   'remove_functions'    => ['execute_all', 'iface_up', 'iface_down', 'execute'] }
-);
+sub error {
 
-sub subroutine {
+  my $fmt = shift (@_);
 
-  return (caller (1))[3];
+  if ($fmt) {
+    $fmt =~ s/\s*$//o;
+    $fmt =~ s/^\s*//o;
+  }
+
+  if ($fmt) {
+    printf STDERR "$fmt\n", @_;
+  } else {
+    printf STDERR "unknown error\n";
+  }
+
+  exit (1);
 }
 
 sub remove_line_control {
 
-  my ($in, $out) = @_;
-
-  my $infh = undef;
-  my $outfh = undef;
-
-  if (! open ($infh, '<', $in)) {
-    printf STDERR "%s: open %s: %s\n", subroutine, $in, $!;
-    goto error;
-  }
-  if (! open ($outfh, '>', $out)) {
-    printf STDERR "%s: open %s: %s\n", subroutine, $out, $!;
-    goto error;
-  }
+  my ($lines) = @_;
 
   my $line;
-  while ($line = <$infh>) {
-    if ($line =~ m/$line_control_pattern/) {
-      print $outfh "\n";
+  my @mod_lines = ();
+
+  foreach $line (@{$lines}) {
+    if ($line =~ m/^#line/) {
+      push (@mod_lines, "\n");
     } else {
-      print $outfh $line;
+      push (@mod_lines, $line);
     }
   }
 
-  close ($infh);
-  close ($outfh);
-
-  return 0;
-
-error:
-  close ($infh)
-    if (defined $infh);
-  close ($outfh)
-    if (defined $outfh);
-  return -1;
+  return wantarray () ? @mod_lines : \@mod_lines;
 }
 
 use constant STATE_NONE => 0;
@@ -64,19 +48,7 @@ use constant STATE_IN_FUNC => 2;
 
 sub remove_functions {
 
-  my ($in, $out, @funcs) = @_;
-
-  my $infh = undef;
-  my $outfh = undef;
-
-  if (! open ($infh, '<', $in)) {
-    printf STDERR "%s: open %s: %s", subroutine, $in, $!;
-    goto error;
-  }
-  if (! open ($outfh, '>', $out)) {
-    printf STDERR "%s: open %s: %s", subroutine, $out, $!;
-    goto error;
-  }
+  my ($lines, $funcs) = @_;
 
   my $in_preproc = 0;
   my $in_func = 0;
@@ -86,8 +58,9 @@ sub remove_functions {
   my $line;
   my $nline = 0;
   my @line_buffer = ();
+  my @mod_lines = ();
 
-  while ($line = <$infh>) {
+  foreach $line (@{$lines}) {
 
     $nline++;
 
@@ -133,8 +106,8 @@ sub remove_functions {
             $in_func = 0;
             @line_buffer = ();
           } else {
-            print $outfh @line_buffer;
-            print $outfh $line;
+            push (@mod_lines, @line_buffer);
+            push (@mod_lines, $line);
             @line_buffer = ();
           }
         } else {
@@ -147,7 +120,7 @@ sub remove_functions {
         # possible prototype or implementation
         my $func;
         my $found = 0;
-        foreach $func (@funcs) {
+        foreach $func (@{$funcs}) {
           my $n = length $func;
           next if (($nchrs - ($i+1)) < $n);
           my $s = join ("", @chrs[$i..($i+($n-1))]);
@@ -159,8 +132,7 @@ sub remove_functions {
               $i += $n;
               last;
             } else {
-              printf STDERR "reference to $func in $in line $nline\n";
-              goto error;
+              error ("reference to %s on line %u", $func, $nline);
             }
           }
         }
@@ -172,27 +144,77 @@ sub remove_functions {
     }
   }
 
-  close ($infh);
-  close ($outfh);
-  return 0;
+  return wantarray () ? @mod_lines : \@mod_lines;
+}
 
-error:
-  close ($infh)
-    if (defined $infh);
-  close ($outfh)
-    if (defined $outfh);
-  return -1;
+sub usage {
+
+  my $fmt = <<EOF;
+Usage: %s [OPTION] SRC DEST
+
+Options
+ --remove-line-control
+ --remove-function=FUNC
+EOF
+
+  printf $fmt, $0;
+  exit 0;
 }
 
 sub main {
 
-  return 1
-    if (@ARGV < 2 || $ARGV[0] eq $ARGV[1]);
+  my $force;
+  my $src_file;
+  my $dest_file;
+  my $rm_line_ctl = 0;
+  my @rm_funcs = ();
 
-  remove_line_control ($ARGV[0], $ARGV[1].".0");
-  remove_functions ($ARGV[1].".0", $ARGV[1].".1", 'execute_all', 'iface_up', 'iface_down', 'execute');
-  rename ($ARGV[1].".1", $ARGV[1]);
-  unlink ($ARGV[1].".0");
+  GetOptions ('force' => \$force,
+              'remove-line-control' => \$rm_line_ctl,
+              'remove-function=s@' => \@rm_funcs);
+
+  $src_file = $ARGV[0] || '';
+  $dest_file = $ARGV[1] || '';
+
+  usage () if (! $src_file || ! -e $src_file);
+  usage () if (! $dest_file);
+
+  error ("%s already exists, specify --force to overwrite\n", $dest_file)
+    if (-e $dest_file && ! $force);
+
+  # read file into memory
+  my $line;
+  my @lines = ();
+  my $src_handle;
+  my $dest_handle;
+
+  error ("open: %s: %s", $src_file, $!)
+    if (! open ($src_handle, '<', $src_file));
+
+  while ($line = <$src_handle>) {
+    push (@lines, $line);
+  }
+
+  close ($src_handle);
+
+  # modify source
+  if ($rm_line_ctl) {
+    @lines = remove_line_control (\@lines);
+  }
+
+  if (scalar (@rm_funcs)) {
+    @lines = remove_functions (\@lines, \@rm_funcs);
+  }
+
+  # write file to disk
+  error ("open: %s: %s", $dest_file, $!)
+    if (! open ($dest_handle, '>', $dest_file));
+
+  foreach $line (@lines) {
+    print $dest_handle $line;
+  }
+
+  close ($dest_handle);
 
   return 0;
 }
