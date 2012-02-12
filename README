@@ -1,2 +1,36 @@
-vipupdown - simple tooling to enable and handle multiple ucarp instances on a single interface
+vipupdown - enable and handle multiple ucarp instances on single interface
 vipif - print logical interface(s) for given virtual IP address(es)
+
+vipupdown uses slightly modified sources from ifupdown as found in Debian
+GNU/Linux to parse the interfaces file. To prepare the source files for
+inclusion in vipupdown, execute the following commands.
+
+strip.pl --remove-line-control \
+  <ifupdown>/addrfam.c <vipupdown>/ifupdown/addrfam.c
+strip.pl --remove-line-control \
+  <ifupdown>/archlinux.c <vipupdown>/ifupdown/archlinux.c
+strip.pl --remove-line-control \
+  <ifupdown>/archlinux.h <vipupdown>/ifupdown/archlinux.h
+strip.pl --remove-line-control \
+  <ifupdown>/config.c <vipupdown>/ifupdown/config.c
+strip.pl --remove-line-control \
+  --remove-function=execute_all \
+  --remove-function=iface_up \
+  --remove-function=iface_down \
+  --remove-function=execute \
+  <ifupdown>/execute.c <vipupdown>/ifupdown/execute.c
+strip.pl --remove-line-control \
+  --remove-function=execute_all \
+  --remove-function=iface_up \
+  --remove-function=iface_down \
+  --remove-function=execute \
+  <ifupdown>/header.h <vipupdown>/ifupdown/header.h
+defn2c.pl < <ifupdown>/inet.defn > <vipupdown>/ifupdown/inet.c
+defn2c.pl < <ifupdown>/inet6.defn > <vipupdown>/ifupdown/inet6.c
+defn2c.pl < <ifupdown>/ipx.defn > <vipupdown>/ifupdown/ipx.c
+strip.pl --remove-line-control \
+  --remove-function=usage \
+  --remove-function=version \
+  --remove-function=help \
+  --remove-function=main \
+  <ifupdown>/main.c <vipupdown>/ipupdown/main.c
