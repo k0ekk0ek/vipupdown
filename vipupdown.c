@@ -15,18 +15,20 @@
 #include "utils.h"
 
 /* prototypes */
+void help (const char *);
 void usage (const char *);
 void version (const char *, const char *);
 char **get_all_virt_names (const char *, interface_defn *);
 char **get_deduped_virt_names (const char *, int, char **);
-int vipup (interface_defn *, interface_defn *);
-int vipdown (interface_defn *, interface_defn *);
+
+#define VERSION "0.1"
+#define KILL_RETRY (5)
 
 char ucarp[] = "/usr/sbin/ucarp";
 char ucarp_up[] = "/etc/network/if-up.d/ucarp";
 
 void
-usage (const char *prog)
+help (const char *prog)
 {
   char *fmt =
   "Usage: %s <options> <ifaces...>\n"
@@ -41,6 +43,16 @@ usage (const char *prog)
 
   printf (fmt, prog);
   exit (0);
+}
+
+void
+usage (const char *prog)
+{
+  char *fmt =
+  "%s: Use --help for help\n";
+
+  printf (fmt, prog);
+  exit (1);
 }
 
 void
@@ -164,174 +176,21 @@ error:
 }
 
 int
-start_ucarp_daemon (const char *prog,
-                    interface_defn *ucarp_iface,
-                    interface_defn *virt_iface)
-{
-  char **env;
-  char *postfix, *ptr;
-  int i, nenv, export;
-
-  /* directly copied from set_environ as implemented in execute.c */
-  if (environ) {
-    for (env = environ; *env; env++) {
-      free (*env);
-      *env = NULL;
-    }
-    free (environ);
-    environ = NULL;
-  }
-
-  nenv = ucarp_iface->n_options + 8;
-
-  if (! (environ = calloc (nenv + 1, sizeof (char *)))) {
-    fprintf (stderr, "%s: calloc: %s", prog, strerror (errno));
-    goto error;
-  }
-
-  env = environ;
-
-  /* export environment variables needed to bring up ucarp */
-  if ((postfix = strrchr (virt_iface->logical_iface, ':'))) {
-    postfix++;
-    if (! isdigit (*postfix))
-      postfix = NULL;
-  }
-
-  for (i = 0; i < ucarp_iface->n_options; i++) {
-    export = 0;
-
-    if (strncmp (ucarp_iface->option[i].name, "ucarp-", 6) == 0) {
-      ptr = strchr (ucarp_iface->option[i].name, ':');
-      if ((ptr && postfix && strcmp (++ptr, postfix) == 0) || (! ptr && ! postfix))
-        export = 1;
-    } else if (strcmp(ucarp_iface->option[i].name, "pre-up")    != 0 &&
-               strcmp(ucarp_iface->option[i].name, "up")        != 0 &&
-               strcmp(ucarp_iface->option[i].name, "down")      != 0 &&
-               strcmp(ucarp_iface->option[i].name, "post-down") != 0)
-    {
-      export = 1;
-    }
-
-
-    if (export)
-      *(env++) = setlocalenv ("IF_%s=%s", ucarp_iface->option[i].name, ucarp_iface->option[i].value);
-  }
-
-  /* export generic environment variables */
-  *(env++) = setlocalenv("%s=%s", "IFACE",     ucarp_iface->logical_iface);
-  *(env++) = setlocalenv("%s=%s", "LOGICAL",   ucarp_iface->logical_iface);
-  *(env++) = setlocalenv("%s=%s", "ADDRFAM",   ucarp_iface->address_family->name);
-  *(env++) = setlocalenv("%s=%s", "METHOD",    ucarp_iface->method->name);
-  *(env++) = setlocalenv("%s=%s", "MODE",      "start");
-  *(env++) = setlocalenv("%s=%s", "PHASE",     "post-up");
-  *(env++) = setlocalenv("%s=%s", "VERBOSITY", verbose ? "1" : "0");
-  *(env++) = setlocalenv("%s=%s", "PATH",      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-  *(env)   = NULL;
-
-  if (! doit (ucarp_up)) {
-    fprintf (stderr, "%s: failed to start ucarp for interface %s\n",
-      prog, virt_iface->logical_iface);
-  }
-
-  for (env = environ; *env; env++) {
-    free (*env);
-    *env = NULL;
-  }
-  free (environ);
-  environ = NULL;
-
-  return 0;
-error:
-  return -1;
-}
-
-int
-stop_ucarp_daemon (const char *prog,
-                   pid_t pid,
-                   interface_defn *ucarp_iface,
-                   interface_defn *virt_iface)
-{
-  int j, orig_errno;
-  time_t ucarp_starttime, starttime;
-
-  if (! no_act) {
-    ucarp_starttime = get_proc_starttime (pid);
-    if (ucarp_starttime == (time_t)-1) {
-      fprintf (stderr, "%s: failed to get ucarp starttime for interface %s: %s\n",
-        prog, virt_iface->logical_iface, strerror (errno));
-      goto error;
-    }
-
-    for (j = 0; j < 5; j++) {
-      /* check if starttime of process to be killed is less than starttime of
-         of ucarp daemon to make sure we're not killing some newly created
-         process */
-      errno = 0;
-      starttime = get_proc_starttime (pid);
-      if (starttime == (time_t)-1) {
-        if (errno) {
-          fprintf (stderr, "%s: failed to get ucarp starttime for interface: %s\n",
-            prog, virt_iface->logical_iface, strerror (errno));
-          goto error;
-        }
-        /* no starttime, process must have died */
-        break;
-      } else if (starttime < ucarp_starttime) {
-        /* starttime is less than ucarp_starttime, that is impossible */
-        break;
-      }
-
-      if (kill (pid, SIGTERM) < 0) {
-        if (errno == ESRCH) {
-          /* process must have died */
-          break;
-        } else {
-          fprintf (stderr, "%s: failed to stop ucarp for interface %s: %s\n",
-            prog, virt_iface->logical_iface, strerror (errno));
-          goto error;
-        }
-      } else if (j > 0) {
-        /* give ucarp daemon some time to terminate */
-        sleep (1);
-      }
-    }
-
-    starttime = get_proc_starttime (pid);
-    if (starttime == (time_t)-1 || starttime < ucarp_starttime) {
-      fprintf (stderr, "%s: interface %s unconfigured\n",
-         prog, virt_iface->logical_iface);
-    } else {
-      fprintf (stderr, "%s: failed to stop ucarp for interface %s: %s\n",
-        prog, virt_iface->logical_iface, strerror (errno));
-    }
-  } else {
-    fprintf (stderr, "%s: stop ucarp for interface %s\n",
-      prog, virt_iface->logical_iface);
-  }
-
-  errno = orig_errno;
-  return 0;
-error:
-  return -1;
-}
-
-int
 main (int argc, char *argv[])
 {
   char *prog;
   char *args[4];
   char *opts = "i:hVanv";
-  char *interfaces = INTERFACES;
-  char *state;
+  char *interfaces = NULL;
   char *virt_addr;
   char *virt_name, **virt_names;
   char ucarp_name[80];
-  char *ptr;
-  int all, already;
-  int c, i, j, len;
+  char *ptr, *tail, *delim;
+  int all, export;
+  int c, len, ret, res;
+  int envno, ifno, optno;
   int orig_errno;
-  interfaces_file *defs;
+  interfaces_file *iface_file;
   interface_defn *iface, *ifaces;
   interface_defn *virt_iface;
   interface_defn *ucarp_iface;
@@ -347,17 +206,12 @@ main (int argc, char *argv[])
   environ = NULL;
   pid_t pid;
 
-  if ((prog = strrchr (argv[0], '/'))) {
+  if ((prog = strrchr (argv[0], '/')))
     prog++;
-  } else {
+  else
     prog = argv[0];
-  }
 
-  if (strcmp (prog, "vipup") == 0) {
-    //action = &vipup;
-  } else if (strcmp (prog, "vipdown") == 0) {
-    //action = &vipdown;
-  } else {
+  if (strcmp (prog, "vipup") != 0 && strcmp (prog, "vipdown") != 0) {
     fprintf (stderr, "%s: invoke as vipup or vipdown\n", prog);
     exit (1);
   }
@@ -369,13 +223,17 @@ main (int argc, char *argv[])
   all = 0;
   for (; (c = getopt_long (argc, argv, opts, long_opts, NULL)) != EOF ;) {
     switch (c) {
+      case 'h':
+        help (prog);
+        break; /* never reached */
+      case 'V':
+        version (prog, VERSION);
+        break; /* never reached */
       case 'a':
         all = 1;
         break;
       case 'i':
         interfaces = strdup (optarg);
-        break;
-      case 'b':
         break;
       case 'n':
         no_act = 1;
@@ -390,25 +248,26 @@ main (int argc, char *argv[])
   }
 
   /* at least one interface should be given if -a wasn't specified! */
-  if (! all && optind == argc) {
+  if (! all && optind == argc)
     usage (prog);
-  }
+
+  if (! interfaces)
+    interfaces = strdup (INTERFACES);
 
   /* parse interfaces file */
-  if (! (defs = read_interfaces (interfaces))) {
+  if (! (iface_file = read_interfaces (interfaces))) {
     fprintf (stderr, "%s: cannot read interfaces file \"%s\"\n",
       prog, interfaces);
     exit (1);
   }
 
-  ifaces = defs->ifaces;
+  ifaces = iface_file->ifaces;
 
   /* decide which ucarp interfaces should be brought up */
-  if (all) {
+  if (all)
     virt_names = get_all_virt_names (prog, ifaces);
-  } else {
+  else
     virt_names = get_deduped_virt_names (prog, argc - optind, argv + optind);
-  }
 
   if (! virt_names) {
     if (all)
@@ -416,14 +275,20 @@ main (int argc, char *argv[])
     usage (prog);
   }
 
-  for (i = 0; virt_names[i]; i++) {
-    virt_name = virt_names[i];
+  for (ifno = 0; virt_names[ifno]; ifno++) {
+    virt_addr = NULL;
+    virt_name = virt_names[ifno];
     virt_iface = NULL;
+    ucarp_iface = NULL;
 
-    if (! (ptr = strstr (virt_name, ":ucarp"))) {
-      fprintf (stderr, "%s: ignoring interface %s\n",
-        prog, virt_name);
+    if (! (delim = strstr (virt_name, ":ucarp"))) {
+      fprintf (stderr, "%s: ignoring interface %s\n", prog, virt_name);
       continue;
+    }
+
+    if ((tail = strrchr (virt_name, ':'))) {
+      if (! isdigit (*(++tail)))
+        tail = NULL;
     }
 
     /* retrieve interface definition */
@@ -433,22 +298,23 @@ main (int argc, char *argv[])
     }
 
     if (! virt_iface) {
-      fprintf (stderr, "%s: ignoring unknown interface %s\n",
-        prog, virt_name);
+      fprintf (stderr, "%s: unkown interface %s\n", prog, virt_name);
       continue;
     }
 
-    virt_addr = getifattrbyname (virt_iface, "address");
+    for (optno = 0; optno < virt_iface->n_options; optno++) {
+      if (strcmp (virt_iface->option[optno].name, "address") == 0)
+        virt_addr = virt_iface->option[optno].value;
+    }
 
     if (! virt_addr) {
-      fprintf (stderr, "%s: address missing for interface %s\n",
-        prog, virt_name);
+      fprintf (stderr, "%s: unkown interface %s\n", prog, virt_name);
       continue;
     }
 
-    /* retrieve parent interface definition */
-    (void)strncpy (ucarp_name, virt_name, (size_t)(ptr - virt_name));
-    ucarp_iface = NULL;
+    /* retrieve ucarp interface definition */
+    memset (ucarp_name, '\0', 80);
+    (void)strncpy (ucarp_name, virt_name, (size_t)(delim - virt_name));
 
     for (iface = ifaces; ! ucarp_iface && iface; iface = iface->next) {
       if (strcmp (iface->logical_iface, ucarp_name) == 0)
@@ -456,8 +322,29 @@ main (int argc, char *argv[])
     }
 
     if (! ucarp_iface) {
-      fprintf (stderr, "%s: unknown ucarp interface %s\n",
-        prog, ucarp_name);
+      fprintf (stderr, "%s: unknown ucarp interface %s\n", prog, ucarp_name);
+      continue;
+    }
+
+    /* verify the interface is known by the same name under the ucarp
+       interface */
+    for (optno = 0; optno < ucarp_iface->n_options; optno++) {
+      ptr = ucarp_iface->option[optno].name;
+      if (tail) {
+        if (strncmp (ptr, "ucarp-vip:", 10) == 0 && strcmp (ptr+10, tail) == 0)
+          break;
+      } else {
+        if (strcmp (ptr, "ucarp-vip") == 0)
+          break;
+      }
+    }
+
+    if (optno >= ucarp_iface->n_options) {
+      fprintf (stderr, "%s: interface %s not configured in ucarp interface\n", prog, virt_name);
+      continue;
+    }
+    if (strcmp (ucarp_iface->option[optno].value, virt_addr) != 0) {
+      fprintf (stderr, "%s: interface %s configured with different ip address in ucarp interface\n", prog, virt_name);
       continue;
     }
 
@@ -465,8 +352,7 @@ main (int argc, char *argv[])
        down. virtual interface is skipped in both cases, since there's nothing
        we can do. */
     if (! read_state (prog, ucarp_name)) {
-      fprintf (stderr, "%s: ucarp interface %s not configured\n",
-        prog, ucarp_name);
+      fprintf (stderr, "%s: ucarp interface %s not configured\n", prog, ucarp_name);
       continue;
     }
 
@@ -479,45 +365,108 @@ main (int argc, char *argv[])
     pid = get_proc_by_args (args);
     if (pid == (pid_t)-1) {
       if (errno) {
-        fprintf (stderr, "%s: failed to check if ucarp daemon is running: %s\n",
-          prog, strerror (errno));
-        continue;
-      }
-      if (strcmp (prog, "vipdown") == 0) {
-        fprintf (stderr, "%s: ucarp daemon not running\n", prog);
-        continue;
-      }
-    }
-
-    pid = get_proc_by_args (args);
-    if (pid == (pid_t)-1) {
-      if (errno) {
-        fprintf (stderr, "%s: failed to check if ucarp daemon is running: %s\n",
-          prog, strerror (errno));
-        continue;
+        fprintf (stderr, "%s: get_proc_by_args: %s\n", prog, strerror (errno));
+        goto error;
       }
       /* virtual interface considered down if ucarp daemon is not running */
       if (strcmp (prog, "vipdown") == 0) {
-        fprintf (stderr, "%s: interface %s not configured\n",
+        fprintf (stderr, "%s: ucarp not started for interface %s\n",
           prog, virt_name);
-      /* start ucarp daemon */
+      } else if (no_act) {
+        fprintf (stderr, "%s: would start ucarp for interface %s\n",
+          prog, virt_name);
       } else {
-        (void)start_ucarp_daemon (prog, ucarp_iface, virt_iface);
+        /* export environment variables */
+        if (! (environ = calloc (ucarp_iface->n_options + 9, sizeof (char *)))) {
+          fprintf (stderr, "%s: calloc: %s", prog, strerror (errno));
+          goto error;
+        }
+
+        for (optno = 0, envno = 0; optno < ucarp_iface->n_options; optno++) {
+          if (strcmp (ucarp_iface->option[optno].name, "pre-up")    == 0 ||
+              strcmp (ucarp_iface->option[optno].name, "up")        == 0 ||
+              strcmp (ucarp_iface->option[optno].name, "down")      == 0 ||
+              strcmp (ucarp_iface->option[optno].name, "post-down") == 0)
+            continue;
+
+          export = 0;
+          if (strncmp (ucarp_iface->option[optno].name, "ucarp-", 6) == 0) {
+            ptr = strchr (ucarp_iface->option[optno].name, ':');
+            if ((!ptr && !tail) ||
+                ( ptr &&  tail && strcmp (++ptr, tail) == 0))
+              export = 1;
+          } else {
+            export = 1;
+          }
+
+          if (export) {
+            environ[envno++] = setlocalenv ("IF_%s=%s",
+                                            ucarp_iface->option[optno].name, 
+                                            ucarp_iface->option[optno].value);
+          }
+        }
+
+        /* export generic environment variables */
+        environ[envno++] = setlocalenv("%s=%s", "IFACE",     ucarp_iface->logical_iface);
+        environ[envno++] = setlocalenv("%s=%s", "LOGICAL",   ucarp_iface->logical_iface);
+        environ[envno++] = setlocalenv("%s=%s", "ADDRFAM",   ucarp_iface->address_family->name);
+        environ[envno++] = setlocalenv("%s=%s", "METHOD",    ucarp_iface->method->name);
+        environ[envno++] = setlocalenv("%s=%s", "MODE",      "start");
+        environ[envno++] = setlocalenv("%s=%s", "PHASE",     "post-up");
+        environ[envno++] = setlocalenv("%s=%s", "VERBOSITY", verbose ? "1" : "0");
+        environ[envno++] = setlocalenv("%s=%s", "PATH",      "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+        environ[envno]   = NULL;
+
+        /* execute /etc/network/if-up.d/ucarp */
+        if (! doit (ucarp_up)) {
+          fprintf (stderr, "%s: ucarp not started for interface %s\n",
+            prog, virt_iface->logical_iface);
+        }
+
+        for (envno = 0; environ[envno]; envno++) {
+          free (environ[envno]);
+          environ[envno] = NULL;
+        }
+        free (environ);
+        environ = NULL;
       }
     } else {
       /* virtual interface considered up if ucarp daemon is running */
       if (strcmp (prog, "vipup") == 0) {
-        fprintf (stderr, "%s: interface %s already configured\n",
-          prog, virt_name);
-      /* stop ucarp daemon */
+        fprintf (stderr, "%s: ucarp already started for interface %s\n", prog, virt_name);
+      } else if (no_act) {
+        fprintf (stderr, "%s: would start ucarp for interface %s\n", prog, virt_name);
       } else {
-        (void)stop_ucarp_daemon (prog, pid, ucarp_iface, virt_iface);
+        ret = kill_proc (pid, SIGTERM, KILL_RETRY);
+        if (ret < 0)
+          fprintf (stderr, "%s: kill_proc: %s\n", prog, strerror (errno));
+        else if (ret > KILL_RETRY)
+          fprintf (stderr, "%s: ucarp not stopped for interface %s\n", prog, virt_name);
       }
     }
   }
 
-  free (virt_names);
+  res = 0;
+cleanup:
 
-  return 0;
+  if (virt_names) {
+    for (ifno = 0; virt_names[ifno]; ifno++)
+      free (virt_names[ifno]);
+    free (virt_names);
+  }
+
+  if (environ) {
+    for (envno = 0; environ[envno]; envno++)
+      free (environ[envno]);
+    free (environ);
+  }
+
+  free_interfaces (iface_file);
+  free (interfaces);
+
+  return res;
+error:
+  res = 1;
+  goto cleanup;
 }
 

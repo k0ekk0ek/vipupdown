@@ -42,14 +42,74 @@ sub remove_line_control {
   return wantarray () ? @mod_lines : \@mod_lines;
 }
 
-use constant STATE_NONE => 0;
-use constant STATE_FUNC_NAME => 1;
-use constant STATE_IN_FUNC => 2;
+sub remove_keywords {
+
+  my ($lines, $func, $keywords) = @_;
+
+  my $found;
+  my $pass = 0;
+  my $line;
+  my $mod_line = "";
+  my @mod_lines = ();
+
+  foreach $line (@{$lines}) {
+
+    if ($pass) {
+      push (@mod_lines, $line);
+    } else {
+      my $i = 0;
+      my $n = 0;
+      my $s = "";
+      my @chrs = split (//, $line);
+      my $nchrs = scalar @chrs;
+      $mod_line = "";
+
+      for ($i = 0; $i < $nchrs; ) {
+        if ($pass) {
+          $mod_line .= $chrs[$i++];
+        } else {
+          $found = 0;
+          $n = length $func;
+          if (($nchrs - ($i+1)) >= $n) {
+            $s = join ("", @chrs[$i..($i+($n-1))]);
+            if ($s eq $func) {
+              $i += $n;
+              $mod_line .= $s;
+              $pass = 1;
+              next;
+            }
+          }
+
+          foreach my $keyword (@{$keywords}) {
+            $n = length $keyword;
+            if (($nchrs - ($i+1)) >= $n) {
+              $s = join ("", @chrs[$i..($i+($n-1))]);
+              if ($s eq $keyword) {
+                $found = 1;
+                $i += $n;
+                last;
+              }
+            }
+          }
+
+          if (! $found) {
+            $mod_line .= $chrs[$i++];
+          }
+        }
+      }
+
+      push (@mod_lines, $mod_line);
+    }
+  }
+
+  return wantarray ? @mod_lines : \@mod_lines;
+}
 
 sub remove_functions {
 
   my ($lines, $funcs) = @_;
 
+  my $found = "";
   my $in_preproc = 0;
   my $in_func = 0;
   my $nbrackets = 0;
@@ -103,6 +163,21 @@ sub remove_functions {
 
         if ($nbrackets == 0 && $ncurly_brackets == 0 && $in_preproc == 0 && $end_of_statement) {
           if ($in_func) {
+            my @keywords = ();
+            foreach my $keyword (keys %{$funcs->{$found}}) {
+              if ($keyword =~ m/function/) {
+                @keywords = ();
+                last;
+              } else {
+                push (@keywords, $keyword);
+              }
+            }
+
+            if (scalar (@keywords)) {
+              push (@line_buffer, $line);
+              push (@mod_lines, remove_keywords (\@line_buffer, $found, \@keywords));
+            }
+            $found = "";            
             $in_func = 0;
             @line_buffer = ();
           } else {
@@ -119,25 +194,25 @@ sub remove_functions {
 
         # possible prototype or implementation
         my $func;
-        my $found = 0;
-        foreach $func (@{$funcs}) {
+        $found = "";
+        foreach $func (keys %{$funcs}) {
           my $n = length $func;
           next if (($nchrs - ($i+1)) < $n);
           my $s = join ("", @chrs[$i..($i+($n-1))]);
 
           if ($s eq $func) {
             if ($nbrackets == 0 && $ncurly_brackets == 0) {
-              $found = 1;
+              $found = $func;
               $in_func = 1;
               $i += $n;
               last;
-            } else {
+            } elsif ($funcs->{$func}->{function}) {
               error ("reference to %s on line %u", $func, $nline);
             }
           }
         }
 
-        $i++ if ($found == 0);
+        $i++ if (! $found);
       } else {
         $i++;
       }
@@ -155,6 +230,7 @@ Usage: %s [OPTION] SRC DEST
 Options
  --remove-line-control
  --remove-function=FUNC
+ --remove-keyword-static=FUNC
 EOF
 
   printf $fmt, $0;
@@ -168,10 +244,12 @@ sub main {
   my $dest_file;
   my $rm_line_ctl = 0;
   my @rm_funcs = ();
+  my @rm_keywords = ();
 
   GetOptions ('force' => \$force,
               'remove-line-control' => \$rm_line_ctl,
-              'remove-function=s@' => \@rm_funcs);
+              'remove-function=s@' => \@rm_funcs,
+              'remove-keyword-static=s@' => \@rm_keywords);
 
   $src_file = $ARGV[0] || '';
   $dest_file = $ARGV[1] || '';
@@ -202,8 +280,28 @@ sub main {
     @lines = remove_line_control (\@lines);
   }
 
-  if (scalar (@rm_funcs)) {
-    @lines = remove_functions (\@lines, \@rm_funcs);
+  my %kws = ();
+
+  foreach my $kw (@rm_funcs) {
+    if ($kws{$kw}) {
+      $kws{$kw}->{function} = 1;
+    } else {
+      $kws{$kw} = {};
+      $kws{$kw}->{function} = 1;
+    }
+  }
+
+  foreach my $kw (@rm_keywords) {
+    if ($kws{$kw}) {
+      $kws{$kw}->{static} = 1;
+    } else {
+      $kws{$kw} = {};
+      $kws{$kw}->{static} = 1;
+    }
+  }
+
+  if (scalar (keys (%kws))) {
+    @lines = remove_functions (\@lines, \%kws);
   }
 
   # write file to disk

@@ -4,12 +4,10 @@
 /* system includes */
 #include <sys/types.h>
 
-/* ifupdown includes */
-#include "ifupdown.h"
+#define KILL_PROC_INTVL (1) /* seconds */
 
 pid_t get_proc_by_args (char **);
 time_t get_proc_starttime (pid_t);
-interface_defn *getifbyattr (interface_defn *, const char *, const char *);
-char *getifattrbyname (interface_defn *, const char *);
+int kill_proc (pid_t, int, int);
 
 #endif

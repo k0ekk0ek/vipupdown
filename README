@@ -18,6 +18,8 @@ strip.pl --remove-line-control \
   --remove-function=iface_up \
   --remove-function=iface_down \
   --remove-function=execute \
+  --remove-keyword-static=setlocalenv \
+  --remove-keyword-static=doit \
   <ifupdown>/execute.c <vipupdown>/ifupdown/execute.c
 strip.pl --remove-line-control \
   --remove-function=execute_all \
@@ -33,4 +35,5 @@ strip.pl --remove-line-control \
   --remove-function=version \
   --remove-function=help \
   --remove-function=main \
+  --remove-keyword-static=read_state \
   <ifupdown>/main.c <vipupdown>/ipupdown/main.c

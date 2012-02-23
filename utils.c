@@ -40,13 +40,16 @@ ftos (const char *path)
 
   for (;;) {
     if (cnt >= len) {
-      if (! (new_buf = realloc (buf, (len + BUFLEN) + 1)))
+      new_len = len + BUFLEN;
+      if (! (new_buf = realloc (buf, new_len + 1)))
         goto error;
+      /* initialize newly allocated memory to zero */
+      memset (new_buf + cnt, '\0', BUFLEN + 1);
       buf = new_buf;
       len = new_len;
     }
 
-    got = read (fd, buf, (len - cnt));
+    got = read (fd, buf + cnt, (len - cnt));
 
     if (got > 0) {
       cnt += got;
@@ -85,7 +88,8 @@ parse_cmdline (const char *path)
     return NULL;
 
   /* count number or arguments */
-  for (argc = 0, delim = 1, ptr = str; ; ptr++) {
+  ptr = str;
+  for (argc = 0, delim = 1; ; ptr++) {
     if (delim) {
       if (*ptr == '\0') {
         break;
@@ -195,10 +199,8 @@ next:
         for (i = 0, found = 1; args[i] && found; i++) {
           found = 0;
           for (j = 0; proc_args[j] && ! found; j++) {
-            if (strcmp (args[i], proc_args[j]) == 0) {
+            if (strcmp (args[i], proc_args[j]) == 0)
               found = 1;
-              break;
-            }
           }
         }
 
@@ -260,13 +262,15 @@ get_proc_starttime (pid_t pid)
 
   if (! (str = ftos (path))) {
     switch (errno) {
-      case EACCES:
       case EISDIR:
       case ELOOP:
       case ENAMETOOLONG:
       case ENOENT:
       case ENOTDIR:
-        new_errno = EINVAL;
+        new_errno = ESRCH;
+        break;
+      case EACCES:
+        new_errno = EPERM;
         break;
       default:
         new_errno = errno;
@@ -333,44 +337,51 @@ error:
   return (time_t)-1;
 }
 
-interface_defn *
-getifbyattr (interface_defn *ifaces, const char *option, const char *value)
+int
+kill_proc (pid_t pid, int sig, int rty)
 {
-  interface_defn *iface;
-  int i;
+  int orig_errno;
+  int dead, rtyno;
+  time_t proc_starttime, starttime;
 
-  assert (ifaces);
-  assert (option);
-  assert (value);
+  dead = 0;
+  proc_starttime = 0;
+  orig_errno = errno;
+  errno = 0;
 
-  for (iface = ifaces; iface; iface = iface->next) {
-    if (strcmp (option, "logical_iface") == 0 &&
-        strcmp (iface->logical_iface, value) == 0)
-      return iface;
+  for (rtyno = 0; ! dead; ) {
+    if ((starttime = get_proc_starttime (pid)) == (time_t)-1) {
+      if (errno != ESRCH)
+        goto error;
+      /* no such process, process must be dead */
+      dead = 1;
+    } else {
+      if (! proc_starttime)
+        proc_starttime = starttime;
 
-    for (i = 0; i < iface->n_options; i++) {
-      if (strcmp ((iface->option + i)->name, option) == 0 &&
-          strcmp ((iface->option + i)->value, value) == 0)
-        return iface;
+      if (proc_starttime == starttime) {
+        if (rtyno > rty)
+          break;
+        if (kill (pid, sig) < 0) {
+          if (errno != ESRCH)
+            goto error;
+          /* no such process, process must be dead */
+          dead = 1;
+        } else {
+          if (rtyno)
+            sleep (KILL_PROC_INTVL);
+          rtyno++;
+        }
+      } else {
+        /* starttime not the same, original process must be dead */
+        dead = 1;
+      }
     }
   }
 
-  return NULL;
-}
-
-char *
-getifattrbyname (interface_defn *iface, const char *option)
-{
-  unsigned int i;
-
-  assert (iface);
-  assert (option);
-
-  for (i = 0; i < iface->n_options; i++) {
-    if (strcmp ((iface->option + i)->name, option) == 0)
-      return (iface->option + i)->value;
-  }
-
-  return NULL;
+  errno = orig_errno;
+  return rtyno;
+error:
+  return -1;
 }
 

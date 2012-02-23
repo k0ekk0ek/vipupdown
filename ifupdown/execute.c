@@ -14,15 +14,15 @@
 #include <unistd.h>
 #include <sys/wait.h>
 
-char **environ = NULL;
+static char **environ = NULL;
 
 static int check(char *str);
 
 static void set_environ(interface_defn *iface, char *mode, char *phase);
 
-char *setlocalenv(char *format, char *name, char *value);
+ char *setlocalenv(char *format, char *name, char *value);
 
-int doit(char *str);
+ int doit(char *str);
 
 static char *parse(char *command, interface_defn *ifd);
 
@@ -126,7 +126,7 @@ if (strcmp(iface->option[i].name, "pre-up") == 0
 
 }
 
-char *setlocalenv(char *format, char *name, char *value) {
+ char *setlocalenv(char *format, char *name, char *value) {
 	char *result;
 
 	
@@ -164,7 +164,7 @@ if (!result) {
 	return result;
 }
 
-int doit(char *str) {
+ int doit(char *str) {
 	assert(str);
 
 	if (verbose || no_act) {
@@ -173,22 +173,18 @@ int doit(char *str) {
 	if (!no_act) {
 		pid_t child;
 		int status;
-char **env;
+
 		fflush(NULL);
 		switch(child = fork()) {
 		    case -1: /* failure */
 			return 0;
 		    case 0: /* child */
-		    for (env = environ; *env; env++) {
-			  fprintf (stderr, "env: %s\n", *env);
-			}
 			execle("/bin/sh", "/bin/sh", "-c", str, NULL, environ);
 			exit(127);
 		    default: /* parent */
 		    	break;
 		}
 		waitpid(child, &status, 0);
-		fprintf (stderr, "child: %d, status: %d\n", child, WEXITSTATUS(status));
 		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
 			return 0;
 	}

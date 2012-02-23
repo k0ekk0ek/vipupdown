@@ -21,7 +21,7 @@ char *statefile = "/etc/network/run/ifstate";
 char *tmpstatefile = "/etc/network/run/.ifstate.tmp";
 
 
-const char *read_state(const char *argv0, const char *iface);
+ const char *read_state(const char *argv0, const char *iface);
 static void read_all_state(const char *argv0, char ***ifaces, int *n_ifaces);
 static void update_state(const char *argv0, const char *iface, const char *liface);
 
@@ -30,7 +30,7 @@ static int lock_fd (int fd);
 
 
 
-const char *
+ const char *
 read_state (const char *argv0, const char *iface)
 {
 	char *ret = NULL;

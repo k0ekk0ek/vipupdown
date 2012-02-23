@@ -424,6 +424,8 @@ return NULL;
 fclose(f);
 line = -1;
 
+  if (buf)
+    free (buf);
 
 	return defn;
 }
@@ -497,7 +499,7 @@ assert( (*result)[pos] == '\0' );
 
 	while (
 
-(*result)[pos-1] == '\\'
+(*result)[(pos ? pos-1 : pos)] == '\\'
 
                                ) {
 		
@@ -546,7 +548,7 @@ assert( (*result)[pos] == '\0' );
 
 	
 
-while (isspace((*result)[pos-1])) { /* remove trailing whitespace */
+while (isspace((*result)[(pos ? pos-1 : pos)])) { /* remove trailing whitespace */
 	pos--;
 }
 (*result)[pos] = '\0';
